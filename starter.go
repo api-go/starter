@@ -29,6 +29,7 @@ var (
 	// Default configuration
 	appName    = filepath.Base(os.Args[0])
 	appVersion = "1.0.1"
+	appUsage   = ""
 
 	// Internal state
 	commands = make(map[string]*command)
@@ -64,6 +65,9 @@ func init() {
 	AddCommand("restart", "Restart the service", restartCmd)
 	AddCommand("status", "Show service status", statusCmd)
 	AddCommand("kill", "Send signal to a specific service: kill <svc_name> <signal_num>", killCmd)
+
+	// Auto-register log writer service with high priority
+	Register("log-writer", log.WriterService, -100, 0, 0)
 }
 
 // Register adds a service to be managed by the starter.
@@ -81,6 +85,11 @@ func Register(name string, svc Service, priority int, startTimeout, stopTimeout 
 func SetAppInfo(name, version string) {
 	appName = name
 	appVersion = version
+}
+
+// SetUsage sets custom usage text to be displayed in help.
+func SetUsage(text string) {
+	appUsage = text
 }
 
 // AddCommand adds a custom command.
@@ -117,8 +126,11 @@ func Run() {
 }
 
 func showHelp() {
-	fmt.Printf("%s (%s)\n\nUsage:\n  %s [command] [options]\n\nCommands:\n",
-		appName, appVersion, filepath.Base(os.Args[0]))
+	fmt.Printf("%s (%s)\n\n", appName, appVersion)
+	if appUsage != "" {
+		fmt.Printf("%s\n\n", appUsage)
+	}
+	fmt.Printf("Usage:\n  %s [command] [options]\n\nCommands:\n", filepath.Base(os.Args[0]))
 
 	var names []string
 	for cmdName := range commands {

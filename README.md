@@ -64,6 +64,7 @@ func main() {
 - **Trace ID Propagation**: Automatically generates a shared Trace ID for all services during startup, ensuring log correlation.
 - **Secure IPC**: Token-based Unix Domain Socket for `status` and `kill` commands.
 - **Zero Configuration PID**: Automatic PID management in the system temporary directory.
+- **Embedded Log Writer**: Automatically registered log writer service with high priority (-100).
 
 ## Commands
 
