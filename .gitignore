@@ -1,1 +1,4 @@
 .geminiignore
+.ai/
+.gemini
+/CODE-FULL.md

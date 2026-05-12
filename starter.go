@@ -4,37 +4,74 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"apigo.cc/go/cast"
+	"apigo.cc/go/crypto"
 	"apigo.cc/go/file"
+	"apigo.cc/go/id"
 	"apigo.cc/go/log"
+	"apigo.cc/go/shell"
+	"apigo.cc/go/timer"
 )
 
 var (
 	// Default configuration
-	appName     = filepath.Base(os.Args[0])
-	appVersion  = "1.0.0"
-	pidPath     = ".pid"
-	logPath     = ""
-	stopTimeout = 5 * time.Second
+	appName    = filepath.Base(os.Args[0])
+	appVersion = "1.0.1"
 
 	// Internal state
 	commands = make(map[string]*command)
-	onStart  func(ctx context.Context)
-	onStop   func()
-	onReload func()
+
+	// New Service registry
+	services          = make(map[int][]*managedService)
+	startedPriorities []int
 
 	// Flags
 	flagSet = flag.NewFlagSet(appName, flag.ContinueOnError)
+
+	// IPC Security
+	ipcSecret = "apigo-starter-secret-2026"
 )
+
+// Service defines the lifecycle of a component managed by the starter.
+type Service interface {
+	// Start starts the service. It should block until the service is ready.
+	Start(ctx context.Context, logger *log.Logger) error
+	// Stop stops the service. It should block until the service is cleaned up.
+	Stop(ctx context.Context) error
+	// Health returns the health status of the service.
+	Health() error
+}
+
+// Reloader defines an optional interface for services that support configuration reloading.
+type Reloader interface {
+	Reload() error
+}
+
+// UserSignalHandler defines an optional interface for services that handle custom user signals.
+type UserSignalHandler interface {
+	// HandleUserSignal handles a custom signal. Return true if the signal was handled.
+	HandleUserSignal(sig os.Signal) bool
+}
+
+type managedService struct {
+	Name         string
+	svc          Service
+	priority     int
+	startTimeout time.Duration
+	stopTimeout  time.Duration
+}
 
 type command struct {
 	name string
@@ -43,50 +80,33 @@ type command struct {
 }
 
 func init() {
-	flagSet.StringVar(&pidPath, "pid", ".pid", "PID file path")
-	flagSet.StringVar(&logPath, "log", "", "Log file path (for background mode)")
-
-	AddCmd("start", "Start the service in background", startCmd)
-	AddCmd("stop", "Stop the service", stopCmd)
-	AddCmd("restart", "Restart the service", restartCmd)
-	AddCmd("status", "Show service status", statusCmd)
+	AddCommand("start", "Start the service in background", startCmd)
+	AddCommand("stop", "Stop the service", stopCmd)
+	AddCommand("restart", "Restart the service", restartCmd)
+	AddCommand("status", "Show service status", statusCmd)
+	AddCommand("kill", "Send signal to a specific service: kill <svc_name> <signal_num>", killCmd)
 }
 
-// SetInfo sets the application name and version.
-func SetInfo(name, version string) {
+// Register adds a service to be managed by the starter.
+func Register(name string, svc Service, priority int, startTimeout, stopTimeout time.Duration) {
+	services[priority] = append(services[priority], &managedService{
+		Name:         name,
+		svc:          svc,
+		priority:     priority,
+		startTimeout: startTimeout,
+		stopTimeout:  stopTimeout,
+	})
+}
+
+// SetAppInfo sets the application name and version.
+func SetAppInfo(name, version string) {
 	appName = name
 	appVersion = version
 }
 
-// SetPidFile sets the default PID file path.
-func SetPidFile(path string) {
-	pidPath = path
-}
-
-// SetLogFile sets the default log file path.
-func SetLogFile(path string) {
-	logPath = path
-}
-
-// AddCmd adds a custom command.
-func AddCmd(name, desc string, fn func()) {
+// AddCommand adds a custom command.
+func AddCommand(name, desc string, fn func()) {
 	commands[name] = &command{name: name, desc: desc, fn: fn}
-}
-
-// OnStart sets the function to be called when the service starts.
-// The context will be canceled when a stop signal is received.
-func OnStart(fn func(ctx context.Context)) {
-	onStart = fn
-}
-
-// OnStop sets the function to be called when the service is stopping.
-func OnStop(fn func()) {
-	onStop = fn
-}
-
-// OnReload sets the function to be called when SIGHUP is received.
-func OnReload(fn func()) {
-	onReload = fn
 }
 
 // Run parses arguments and executes the service.
@@ -141,22 +161,49 @@ func runForeground() {
 	savePid(pid)
 	defer removePid()
 
+	// Prepare IPC listener but don't serve yet to avoid race conditions during startup
+	sockPath := getSockPath()
+	_ = os.Remove(sockPath)
+	l, err := net.Listen("unix", sockPath)
+	if err == nil {
+		defer func() {
+			_ = l.Close()
+			_ = os.Remove(sockPath)
+		}()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Setup signal handling
-	sigChan := make(chan os.Signal, 2)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	sigChan := make(chan os.Signal, 10)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2)
 
-	if onStart != nil {
-		go onStart(ctx)
+	// Start registered services
+	if err := startServices(ctx); err != nil {
+		log.DefaultLogger.Error(fmt.Sprintf("Start services failed: %v", err))
+		stopServices()
+		log.DefaultLogger.Error("Service failed to start, exiting.")
+		os.Exit(1)
+		return
+	}
+
+	// Service started successfully, now expose IPC
+	if l != nil {
+		go serveIPC(l)
 	}
 
 	for sig := range sigChan {
 		if sig == syscall.SIGHUP {
-			if onReload != nil {
-				log.DefaultLogger.Info("Received SIGHUP. Reloading...")
-				onReload()
+			log.DefaultLogger.Info("Received SIGHUP. Reloading...")
+			reloadServices()
+			continue
+		}
+
+		// Handle user custom signals
+		if sig == syscall.SIGUSR1 || sig == syscall.SIGUSR2 {
+			if !handleUserSignal(nil, sig) {
+				log.DefaultLogger.Info(fmt.Sprintf("Received signal %v, but no service handled it.", sig))
 			}
 			continue
 		}
@@ -165,12 +212,178 @@ func runForeground() {
 		break
 	}
 
-	cancel() // Trigger context cancellation for onStart
-
-	if onStop != nil {
-		onStop()
-	}
+	cancel() // Trigger context cancellation
+	stopServices()
 	log.DefaultLogger.Info("Shutdown complete.")
+}
+
+func startServices(ctx context.Context) error {
+	var priorities []int
+	for p := range services {
+		priorities = append(priorities, p)
+	}
+	sort.Ints(priorities)
+
+	// Generate a shared logger with trace ID for all services startup
+	logger := log.DefaultLogger.New(id.Get8Bytes4KPerSecond())
+
+	for _, p := range priorities {
+		svcs := services[p]
+		var wg sync.WaitGroup
+		errChan := make(chan error, len(svcs))
+
+		for _, ms := range svcs {
+			wg.Add(1)
+			go func(ms *managedService) {
+				defer wg.Done()
+				sctx := ctx
+				if ms.startTimeout > 0 {
+					var cancel context.CancelFunc
+					sctx, cancel = context.WithTimeout(ctx, ms.startTimeout)
+					defer cancel()
+				}
+				if err := ms.svc.Start(sctx, logger); err != nil {
+					errChan <- fmt.Errorf("service [%s] start error: %w", ms.Name, err)
+				}
+			}(ms)
+		}
+		wg.Wait()
+		close(errChan)
+		for err := range errChan {
+			if err != nil {
+				return err
+			}
+		}
+		startedPriorities = append(startedPriorities, p)
+	}
+	return nil
+}
+
+func stopServices() {
+	sort.Slice(startedPriorities, func(i, j int) bool {
+		return startedPriorities[i] > startedPriorities[j]
+	})
+	for _, p := range startedPriorities {
+		svcs := services[p]
+		var wg sync.WaitGroup
+		for _, ms := range svcs {
+			wg.Add(1)
+			go func(ms *managedService) {
+				defer wg.Done()
+				sctx := context.Background()
+				if ms.stopTimeout > 0 {
+					var cancel context.CancelFunc
+					sctx, cancel = context.WithTimeout(sctx, ms.stopTimeout)
+					defer cancel()
+				}
+				if err := ms.svc.Stop(sctx); err != nil {
+					log.DefaultLogger.Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
+				}
+			}(ms)
+		}
+		wg.Wait()
+	}
+	startedPriorities = nil
+}
+
+func reloadServices() {
+	for _, p := range startedPriorities {
+		for _, ms := range services[p] {
+			if r, ok := ms.svc.(Reloader); ok {
+				if err := r.Reload(); err != nil {
+					log.DefaultLogger.Error(fmt.Sprintf("service [%s] reload error: %v", ms.Name, err))
+				}
+			}
+		}
+	}
+}
+
+func handleUserSignal(svcName *string, sig os.Signal) bool {
+	handled := false
+	for _, p := range startedPriorities {
+		for _, ms := range services[p] {
+			if svcName != nil && ms.Name != *svcName {
+				continue
+			}
+			if h, ok := ms.svc.(UserSignalHandler); ok {
+				if h.HandleUserSignal(sig) {
+					handled = true
+				}
+			}
+		}
+	}
+	return handled
+}
+
+func serveIPC(l net.Listener) {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			data := make([]byte, 4096)
+			n, err := c.Read(data)
+			if err != nil || n == 0 {
+				return
+			}
+
+			// Protocol: TOKEN COMMAND ARGS...
+			parts := strings.Split(string(data[:n]), " ")
+			if len(parts) < 2 {
+				return
+			}
+
+			token := parts[0]
+			if token != getIPCToken(os.Getpid()) {
+				_, _ = c.Write([]byte("Error: Unauthorized"))
+				return
+			}
+
+			cmd := parts[1]
+			args := parts[2:]
+
+			switch cmd {
+			case "status":
+				_, _ = c.Write([]byte(getInternalStatus()))
+			case "kill":
+				if len(args) < 2 {
+					_, _ = c.Write([]byte("Error: Missing arguments for kill"))
+					return
+				}
+				svcName := args[0]
+				sigNum := cast.Int(args[1])
+				if handleUserSignal(&svcName, syscall.Signal(sigNum)) {
+					_, _ = c.Write([]byte(fmt.Sprintf("Signal %d sent to %s", sigNum, svcName)))
+				} else {
+					_, _ = c.Write([]byte(fmt.Sprintf("Error: Service %s not found or didn't handle signal", svcName)))
+				}
+			default:
+				_, _ = c.Write([]byte("Error: Unknown command"))
+			}
+		}(conn)
+	}
+}
+
+func getInternalStatus() string {
+	var out string
+	var priorities []int
+	for p := range services {
+		priorities = append(priorities, p)
+	}
+	sort.Ints(priorities)
+
+	for _, p := range priorities {
+		for _, ms := range services[p] {
+			status := shell.Green("OK")
+			if err := ms.svc.Health(); err != nil {
+				status = shell.Red(fmt.Sprintf("FAIL (%v)", err))
+			}
+			out += fmt.Sprintf("[%d] %-20s %s\n", p, ms.Name, status)
+		}
+	}
+	return out
 }
 
 func startCmd() {
@@ -180,7 +393,6 @@ func startCmd() {
 		return
 	}
 
-	// Build arguments for background process
 	args := []string{}
 	for i := 1; i < len(os.Args); i++ {
 		if os.Args[i] != "start" {
@@ -189,16 +401,6 @@ func startCmd() {
 	}
 
 	cmd := exec.Command(os.Args[0], args...)
-
-	if logPath != "" {
-		file.EnsureParentDir(logPath)
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err == nil {
-			cmd.Stdout = f
-			cmd.Stderr = f
-		}
-	}
-
 	err := cmd.Start()
 	if err != nil {
 		log.DefaultLogger.Error(fmt.Sprintf("Failed to start %s: %v", appName, err))
@@ -219,14 +421,17 @@ func stopCmd() {
 	log.DefaultLogger.Info(fmt.Sprintf("Stopping %s (PID %d)...", appName, pid))
 	_ = process.Signal(syscall.SIGTERM)
 
-	deadline := time.Now().Add(stopTimeout)
-	for time.Now().Before(deadline) {
-		if !isProcessRunning(pid) {
-			log.DefaultLogger.Info("Stopped OK")
-			removePid()
-			return
+	err := timer.Retry(func() error {
+		if isProcessRunning(pid) {
+			return fmt.Errorf("still running")
 		}
-		time.Sleep(200 * time.Millisecond)
+		return nil
+	}, timer.WithMaxRetries(25), timer.WithBackoff(200*time.Millisecond, 1.0))
+
+	if err == nil {
+		log.DefaultLogger.Info("Stopped OK")
+		removePid()
+		return
 	}
 
 	log.DefaultLogger.Info("Stop timeout, killing...")
@@ -236,35 +441,89 @@ func stopCmd() {
 
 func restartCmd() {
 	stopCmd()
-	time.Sleep(500 * time.Millisecond)
+	_ = timer.Retry(func() error { return nil }, timer.WithMaxRetries(1), timer.WithBackoff(500*time.Millisecond, 1.0))
 	startCmd()
 }
 
 func statusCmd() {
 	pid := loadPid()
-	if pid > 0 && isProcessRunning(pid) {
-		log.DefaultLogger.Info(fmt.Sprintf("%s is running (PID %d)", appName, pid))
+	isRunning := pid > 0 && isProcessRunning(pid)
+	if isRunning {
+		fmt.Printf("%s is %s (PID %d)\n", appName, shell.Green("running"), pid)
+		res, err := callIPC(pid, "status")
+		if err == nil {
+			fmt.Println("\nServices:")
+			fmt.Print(res)
+		}
 	} else {
-		log.DefaultLogger.Info(fmt.Sprintf("%s is not running", appName))
+		fmt.Printf("%s is %s\n", appName, shell.Red("not running"))
 	}
+}
+
+func killCmd() {
+	if len(flagSet.Args()) < 2 {
+		fmt.Println("Usage: kill <service_name> <signal_num>")
+		return
+	}
+	pid := loadPid()
+	if pid <= 0 || !isProcessRunning(pid) {
+		fmt.Println("Error: process not running")
+		return
+	}
+	svcName := flagSet.Arg(0)
+	sigNum := flagSet.Arg(1)
+	res, err := callIPC(pid, fmt.Sprintf("kill %s %s", svcName, sigNum))
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+	} else {
+		fmt.Println(res)
+	}
+}
+
+func callIPC(pid int, cmd string) (string, error) {
+	conn, err := net.Dial("unix", getSockPath())
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	token := getIPCToken(pid)
+	_, _ = conn.Write([]byte(fmt.Sprintf("%s %s", token, cmd)))
+
+	data, err := io.ReadAll(conn)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func getIPCToken(pid int) string {
+	// Use Sha256 for better security
+	return crypto.Sha256ToHex([]byte(fmt.Sprintf("%s:%d", ipcSecret, pid)))
+}
+
+func getPidPath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s.pid", appName, appVersion))
+}
+
+func getSockPath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s.sock", appName, appVersion))
 }
 
 func savePid(p int) {
-	file.EnsureParentDir(pidPath)
-	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(p)), 0644)
+	_ = file.Write(getPidPath(), cast.To[string](p))
 }
 
 func loadPid() int {
-	data, err := os.ReadFile(pidPath)
+	data, err := file.Read(getPidPath())
 	if err != nil {
 		return 0
 	}
-	p, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-	return p
+	return cast.To[int](data)
 }
 
 func removePid() {
-	_ = os.Remove(pidPath)
+	_ = os.Remove(getPidPath())
 }
 
 func isProcessRunning(p int) bool {
