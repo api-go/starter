@@ -367,11 +367,16 @@ func getInternalStatus() string {
 
 	for _, p := range priorities {
 		for _, ms := range services[p] {
-			status := shell.Green("OK")
-			if err := ms.svc.Health(); err != nil {
-				status = shell.Red(fmt.Sprintf("FAIL (%v)", err))
+			statusMsg, err := ms.svc.Status()
+			indicator := shell.Green("OK")
+			if err != nil {
+				indicator = shell.Red(fmt.Sprintf("FAIL (%v)", err))
 			}
-			out += fmt.Sprintf("[%d] %-20s %s\n", p, ms.Name, status)
+			if statusMsg != "" {
+				out += fmt.Sprintf("[%d] %-20s %s (%s)\n", p, ms.Name, indicator, statusMsg)
+			} else {
+				out += fmt.Sprintf("[%d] %-20s %s\n", p, ms.Name, indicator)
+			}
 		}
 	}
 	return out

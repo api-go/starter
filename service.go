@@ -12,8 +12,8 @@ type Service interface {
 	Start(ctx context.Context, logger *log.Logger) error
 	// Stop stops the service. It should block until the service is cleaned up.
 	Stop(ctx context.Context) error
-	// Health returns the health status of the service.
-	Health() error
+	// Status returns the current status and health of the service.
+	Status() (string, error)
 }
 
 // Reloader defines an optional interface for services that support configuration reloading.
