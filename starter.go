@@ -87,6 +87,11 @@ func SetAppInfo(name, version string) {
 	appVersion = version
 }
 
+// SetInfo is an alias for SetAppInfo.
+func SetInfo(name, version string) {
+	SetAppInfo(name, version)
+}
+
 // SetUsage sets custom usage text to be displayed in help.
 func SetUsage(text string) {
 	appUsage = text
@@ -95,6 +100,11 @@ func SetUsage(text string) {
 // AddCommand adds a custom command.
 func AddCommand(name, desc string, fn func()) {
 	commands[name] = &command{name: name, desc: desc, fn: fn}
+}
+
+// AddCmd is an alias for AddCommand.
+func AddCmd(name, desc string, fn func()) {
+	AddCommand(name, desc, fn)
 }
 
 // Run parses arguments and executes the service.

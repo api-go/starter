@@ -77,8 +77,11 @@ func (s *mockService) Stop(ctx context.Context) error {
 	}
 }
 
-func (s *mockService) Health() error {
-	return s.healthErr
+func (s *mockService) Status() (string, error) {
+	if s.healthErr != nil {
+		return "unhealthy", s.healthErr
+	}
+	return "ok", nil
 }
 
 func (s *mockService) Reload() error {
