@@ -243,8 +243,11 @@ func startServices(ctx context.Context) error {
 					sctx, cancel = context.WithTimeout(ctx, ms.startTimeout)
 					defer cancel()
 				}
+				logger.Info(fmt.Sprintf("service [%s] starting", ms.Name))
 				if err := ms.svc.Start(sctx, logger); err != nil {
 					errChan <- fmt.Errorf("service [%s] start error: %w", ms.Name, err)
+				} else {
+					logger.Info(fmt.Sprintf("service [%s] started", ms.Name))
 				}
 			}(ms)
 		}
@@ -264,6 +267,9 @@ func stopServices() {
 	sort.Slice(startedPriorities, func(i, j int) bool {
 		return startedPriorities[i] > startedPriorities[j]
 	})
+	
+	logger := log.DefaultLogger.New(id.Get8Bytes4KPerSecond())
+
 	for _, p := range startedPriorities {
 		svcs := services[p]
 		var wg sync.WaitGroup
@@ -277,8 +283,11 @@ func stopServices() {
 					sctx, cancel = context.WithTimeout(sctx, ms.stopTimeout)
 					defer cancel()
 				}
+				logger.Info(fmt.Sprintf("service [%s] stopping", ms.Name))
 				if err := ms.svc.Stop(sctx); err != nil {
-					log.DefaultLogger.Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
+					logger.Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
+				} else {
+					logger.Info(fmt.Sprintf("service [%s] stopped", ms.Name))
 				}
 			}(ms)
 		}
