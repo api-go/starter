@@ -11,18 +11,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"apigo.cc/go/cast"
 	"apigo.cc/go/crypto"
-	"apigo.cc/go/file"
 	"apigo.cc/go/id"
 	"apigo.cc/go/log"
-	"apigo.cc/go/shell"
-	"apigo.cc/go/timer"
 )
 
 var (
@@ -43,6 +38,9 @@ var (
 
 	// IPC Security
 	ipcSecret = "apigo-starter-secret-2026"
+
+	// Starter Logger
+	starterLogger *log.Logger
 )
 
 type managedService struct {
@@ -65,9 +63,14 @@ func init() {
 	AddCommand("restart", "Restart the service", restartCmd)
 	AddCommand("status", "Show service status", statusCmd)
 	AddCommand("kill", "Send signal to a specific service: kill <svc_name> <signal_num>", killCmd)
+}
 
-	// Auto-register log writer service with high priority
-	Register("log-writer", log.WriterService, -100, 0, 0)
+// getStarterLogger returns the singleton logger for the starter context.
+func getStarterLogger() *log.Logger {
+	if starterLogger == nil {
+		starterLogger = log.DefaultLogger.New(id.Get8Bytes4KPerSecond())
+	}
+	return starterLogger
 }
 
 // Register adds a service to be managed by the starter.
@@ -87,11 +90,6 @@ func SetAppInfo(name, version string) {
 	appVersion = version
 }
 
-// SetInfo is an alias for SetAppInfo.
-func SetInfo(name, version string) {
-	SetAppInfo(name, version)
-}
-
 // SetUsage sets custom usage text to be displayed in help.
 func SetUsage(text string) {
 	appUsage = text
@@ -100,11 +98,6 @@ func SetUsage(text string) {
 // AddCommand adds a custom command.
 func AddCommand(name, desc string, fn func()) {
 	commands[name] = &command{name: name, desc: desc, fn: fn}
-}
-
-// AddCmd is an alias for AddCommand.
-func AddCmd(name, desc string, fn func()) {
-	AddCommand(name, desc, fn)
 }
 
 // Run parses arguments and executes the service.
@@ -135,68 +128,22 @@ func Run() {
 	runForeground()
 }
 
-func showHelp() {
-	fmt.Printf("%s (%s)\n\n", appName, appVersion)
-	if appUsage != "" {
-		fmt.Printf("%s\n\n", appUsage)
-	}
-	fmt.Printf("Usage:\n  %s [command] [options]\n\nCommands:\n", filepath.Base(os.Args[0]))
-
-	var names []string
-	for cmdName := range commands {
-		names = append(names, cmdName)
-	}
-	sort.Strings(names)
-
-	for _, cmdName := range names {
-		fmt.Printf("  %-10s %s\n", cmdName, commands[cmdName].desc)
-	}
-
-	fmt.Println("\nOptions:")
-	flagSet.PrintDefaults()
-	fmt.Println("\nIf no command is provided, the service runs in the foreground.")
-}
-
 func runForeground() {
-	pid := os.Getpid()
-	savePid(pid)
-	defer removePid()
-
-	// Prepare IPC listener but don't serve yet to avoid race conditions during startup
-	sockPath := getSockPath()
-	_ = os.Remove(sockPath)
-	l, err := net.Listen("unix", sockPath)
-	if err == nil {
-		defer func() {
-			_ = l.Close()
-			_ = os.Remove(sockPath)
-		}()
-	}
+	// Setup signal handling for graceful shutdown
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Setup signal handling
-	sigChan := make(chan os.Signal, 10)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2)
-
-	// Start registered services
 	if err := startServices(ctx); err != nil {
-		log.DefaultLogger.Error(fmt.Sprintf("Start services failed: %v", err))
-		stopServices()
-		log.DefaultLogger.Error("Service failed to start, exiting.")
+		getStarterLogger().Error(fmt.Sprintf("[starter] start services failed: %v", err))
 		os.Exit(1)
-		return
 	}
 
-	// Service started successfully, now expose IPC
-	if l != nil {
-		go serveIPC(l)
-	}
-
-	for sig := range sigChan {
+	for {
+		sig := <-sigs
 		if sig == syscall.SIGHUP {
-			log.DefaultLogger.Info("Received SIGHUP. Reloading...")
 			reloadServices()
 			continue
 		}
@@ -204,18 +151,18 @@ func runForeground() {
 		// Handle user custom signals
 		if sig == syscall.SIGUSR1 || sig == syscall.SIGUSR2 {
 			if !handleUserSignal(nil, sig) {
-				log.DefaultLogger.Info(fmt.Sprintf("Received signal %v, but no service handled it.", sig))
+				getStarterLogger().Info(fmt.Sprintf("[starter] received signal %v, but no service handled it.", sig))
 			}
 			continue
 		}
 
-		log.DefaultLogger.Info(fmt.Sprintf("Received signal: %v. Shutting down...", sig))
+		getStarterLogger().Info(fmt.Sprintf("[starter] received signal: %v, shutting down...", sig))
 		break
 	}
 
 	cancel() // Trigger context cancellation
 	stopServices()
-	log.DefaultLogger.Info("Shutdown complete.")
+	getStarterLogger().Info("[starter] shutdown complete")
 }
 
 func startServices(ctx context.Context) error {
@@ -224,9 +171,6 @@ func startServices(ctx context.Context) error {
 		priorities = append(priorities, p)
 	}
 	sort.Ints(priorities)
-
-	// Generate a shared logger with trace ID for all services startup
-	logger := log.DefaultLogger.New(id.Get8Bytes4KPerSecond())
 
 	for _, p := range priorities {
 		svcs := services[p]
@@ -243,11 +187,17 @@ func startServices(ctx context.Context) error {
 					sctx, cancel = context.WithTimeout(ctx, ms.startTimeout)
 					defer cancel()
 				}
-				logger.Info(fmt.Sprintf("service [%s] starting", ms.Name))
-				if err := ms.svc.Start(sctx, logger); err != nil {
+
+				// Each service gets its own unique 10-byte trace ID for its internal logs
+				serviceTraceId := id.Get10Bytes14MPerSecond()
+				serviceLogger := log.DefaultLogger.New(serviceTraceId)
+
+				// Log using starter's logger (8-byte ID) but include service's trace ID in extra fields
+				getStarterLogger().Info(fmt.Sprintf("service [%s] starting", ms.Name), "trace", serviceTraceId)
+				if err := ms.svc.Start(sctx, serviceLogger); err != nil {
 					errChan <- fmt.Errorf("service [%s] start error: %w", ms.Name, err)
 				} else {
-					logger.Info(fmt.Sprintf("service [%s] started", ms.Name))
+					getStarterLogger().Info(fmt.Sprintf("service [%s] started", ms.Name), "trace", serviceTraceId)
 				}
 			}(ms)
 		}
@@ -267,8 +217,6 @@ func stopServices() {
 	sort.Slice(startedPriorities, func(i, j int) bool {
 		return startedPriorities[i] > startedPriorities[j]
 	})
-	
-	logger := log.DefaultLogger.New(id.Get8Bytes4KPerSecond())
 
 	for _, p := range startedPriorities {
 		svcs := services[p]
@@ -283,11 +231,11 @@ func stopServices() {
 					sctx, cancel = context.WithTimeout(sctx, ms.stopTimeout)
 					defer cancel()
 				}
-				logger.Info(fmt.Sprintf("service [%s] stopping", ms.Name))
+				getStarterLogger().Info(fmt.Sprintf("service [%s] stopping", ms.Name))
 				if err := ms.svc.Stop(sctx); err != nil {
-					logger.Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
+					getStarterLogger().Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
 				} else {
-					logger.Info(fmt.Sprintf("service [%s] stopped", ms.Name))
+					getStarterLogger().Info(fmt.Sprintf("service [%s] stopped", ms.Name))
 				}
 			}(ms)
 		}
@@ -297,11 +245,12 @@ func stopServices() {
 }
 
 func reloadServices() {
+	getStarterLogger().Info("[starter] reloading all services...")
 	for _, p := range startedPriorities {
 		for _, ms := range services[p] {
 			if r, ok := ms.svc.(Reloader); ok {
 				if err := r.Reload(); err != nil {
-					log.DefaultLogger.Error(fmt.Sprintf("service [%s] reload error: %v", ms.Name, err))
+					getStarterLogger().Error(fmt.Sprintf("service [%s] reload error: %v", ms.Name, err))
 				}
 			}
 		}
@@ -312,7 +261,7 @@ func handleUserSignal(svcName *string, sig os.Signal) bool {
 	handled := false
 	for _, p := range startedPriorities {
 		for _, ms := range services[p] {
-			if svcName != nil && ms.Name != *svcName {
+			if svcName != nil && *svcName != ms.Name {
 				continue
 			}
 			if h, ok := ms.svc.(UserSignalHandler); ok {
@@ -325,168 +274,103 @@ func handleUserSignal(svcName *string, sig os.Signal) bool {
 	return handled
 }
 
-func serveIPC(l net.Listener) {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return
-		}
-		go func(c net.Conn) {
-			defer c.Close()
-			data := make([]byte, 4096)
-			n, err := c.Read(data)
-			if err != nil || n == 0 {
-				return
-			}
-
-			// Protocol: TOKEN COMMAND ARGS...
-			parts := strings.Split(string(data[:n]), " ")
-			if len(parts) < 2 {
-				return
-			}
-
-			token := parts[0]
-			if token != getIPCToken(os.Getpid()) {
-				_, _ = c.Write([]byte("Error: Unauthorized"))
-				return
-			}
-
-			cmd := parts[1]
-			args := parts[2:]
-
-			switch cmd {
-			case "status":
-				_, _ = c.Write([]byte(getInternalStatus()))
-			case "kill":
-				if len(args) < 2 {
-					_, _ = c.Write([]byte("Error: Missing arguments for kill"))
-					return
-				}
-				svcName := args[0]
-				sigNum := cast.Int(args[1])
-				if handleUserSignal(&svcName, syscall.Signal(sigNum)) {
-					_, _ = c.Write([]byte(fmt.Sprintf("Signal %d sent to %s", sigNum, svcName)))
-				} else {
-					_, _ = c.Write([]byte(fmt.Sprintf("Error: Service %s not found or didn't handle signal", svcName)))
-				}
-			default:
-				_, _ = c.Write([]byte("Error: Unknown command"))
-			}
-		}(conn)
+func showHelp() {
+	fmt.Printf("%s (%s)\n\n", appName, appVersion)
+	if appUsage != "" {
+		fmt.Printf("%s\n\n", appUsage)
 	}
-}
+	fmt.Printf("Usage:\n  %s [command] [options]\n\nCommands:\n", filepath.Base(os.Args[0]))
 
-func getInternalStatus() string {
-	var out string
-	var priorities []int
-	for p := range services {
-		priorities = append(priorities, p)
+	var names []string
+	for cmdName := range commands {
+		names = append(names, cmdName)
 	}
-	sort.Ints(priorities)
+	sort.Strings(names)
 
-	for _, p := range priorities {
-		for _, ms := range services[p] {
-			statusMsg, err := ms.svc.Status()
-			indicator := shell.Green("OK")
-			if err != nil {
-				indicator = shell.Red(fmt.Sprintf("FAIL (%v)", err))
-			}
-			if statusMsg != "" {
-				out += fmt.Sprintf("[%d] %-20s %s (%s)\n", p, ms.Name, indicator, statusMsg)
-			} else {
-				out += fmt.Sprintf("[%d] %-20s %s\n", p, ms.Name, indicator)
-			}
-		}
+	for _, name := range names {
+		fmt.Printf("  %-10s %s\n", name, commands[name].desc)
 	}
-	return out
+	fmt.Println()
 }
 
 func startCmd() {
-	pid := loadPid()
-	if pid > 0 && isProcessRunning(pid) {
-		log.DefaultLogger.Info(fmt.Sprintf("%s is already running (PID %d)", appName, pid))
+	pid := getPid()
+	if pid != 0 && isProcessRunning(pid) {
+		getStarterLogger().Info(fmt.Sprintf("[starter] %s is already running (PID %d)", appName, pid))
 		return
 	}
 
-	args := []string{}
-	for i := 1; i < len(os.Args); i++ {
-		if os.Args[i] != "start" {
-			args = append(args, os.Args[i])
-		}
+	cmd := exec.Command(os.Args[0])
+	cmd.Args = append([]string{os.Args[0]}, flagSet.Args()...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		getStarterLogger().Error(fmt.Sprintf("[starter] failed to start %s: %v", appName, err))
+		return
 	}
 
-	cmd := exec.Command(os.Args[0], args...)
-	err := cmd.Start()
-	if err != nil {
-		log.DefaultLogger.Error(fmt.Sprintf("Failed to start %s: %v", appName, err))
-		os.Exit(1)
-	}
-
-	log.DefaultLogger.Info(fmt.Sprintf("%s started (PID %d)", appName, cmd.Process.Pid))
+	_ = os.WriteFile(getPidPath(), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
+	getStarterLogger().Info(fmt.Sprintf("[starter] %s started (PID %d)", appName, cmd.Process.Pid))
 }
 
 func stopCmd() {
-	pid := loadPid()
-	if pid <= 0 || !isProcessRunning(pid) {
-		log.DefaultLogger.Info(fmt.Sprintf("%s is not running", appName))
+	pid := getPid()
+	if pid == 0 || !isProcessRunning(pid) {
+		getStarterLogger().Info(fmt.Sprintf("[starter] %s is not running", appName))
 		return
 	}
 
-	process, _ := os.FindProcess(pid)
-	log.DefaultLogger.Info(fmt.Sprintf("Stopping %s (PID %d)...", appName, pid))
-	_ = process.Signal(syscall.SIGTERM)
+	getStarterLogger().Info(fmt.Sprintf("[starter] stopping %s (PID %d)...", appName, pid))
+	_ = syscall.Kill(pid, syscall.SIGTERM)
 
-	err := timer.Retry(func() error {
-		if isProcessRunning(pid) {
-			return fmt.Errorf("still running")
+	for i := 0; i < 30; i++ {
+		if !isProcessRunning(pid) {
+			removePid()
+			getStarterLogger().Info(fmt.Sprintf("[starter] %s stopped", appName))
+			return
 		}
-		return nil
-	}, timer.WithMaxRetries(25), timer.WithBackoff(200*time.Millisecond, 1.0))
-
-	if err == nil {
-		log.DefaultLogger.Info("Stopped OK")
-		removePid()
-		return
+		time.Sleep(500 * time.Millisecond)
 	}
-
-	log.DefaultLogger.Info("Stop timeout, killing...")
-	_ = process.Kill()
+	getStarterLogger().Warning(fmt.Sprintf("[starter] %s failed to stop gracefully, killing...", appName))
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 	removePid()
 }
 
 func restartCmd() {
 	stopCmd()
-	_ = timer.Retry(func() error { return nil }, timer.WithMaxRetries(1), timer.WithBackoff(500*time.Millisecond, 1.0))
 	startCmd()
 }
 
 func statusCmd() {
-	pid := loadPid()
-	isRunning := pid > 0 && isProcessRunning(pid)
-	if isRunning {
-		fmt.Printf("%s is %s (PID %d)\n", appName, shell.Green("running"), pid)
-		res, err := callIPC(pid, "status")
-		if err == nil {
-			fmt.Println("\nServices:")
-			fmt.Print(res)
-		}
-	} else {
-		fmt.Printf("%s is %s\n", appName, shell.Red("not running"))
+	pid := getPid()
+	if pid == 0 || !isProcessRunning(pid) {
+		fmt.Printf("%s is NOT running\n", appName)
+		return
+	}
+
+	fmt.Printf("%s is running (PID %d)\n\n", appName, pid)
+	res, err := callIPC(pid, "status")
+	if err == nil {
+		fmt.Println("Services Status:")
+		fmt.Println(res)
 	}
 }
 
 func killCmd() {
-	if len(flagSet.Args()) < 2 {
+	if flagSet.NArg() < 2 {
 		fmt.Println("Usage: kill <service_name> <signal_num>")
-		return
-	}
-	pid := loadPid()
-	if pid <= 0 || !isProcessRunning(pid) {
-		fmt.Println("Error: process not running")
 		return
 	}
 	svcName := flagSet.Arg(0)
 	sigNum := flagSet.Arg(1)
+	pid := getPid()
+	if pid == 0 || !isProcessRunning(pid) {
+		fmt.Println("Application is not running")
+		return
+	}
+
 	res, err := callIPC(pid, fmt.Sprintf("kill %s %s", svcName, sigNum))
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -496,24 +380,24 @@ func killCmd() {
 }
 
 func callIPC(pid int, cmd string) (string, error) {
-	conn, err := net.Dial("unix", getSockPath())
+	sockPath := getSockPath()
+	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
 
-	token := getIPCToken(pid)
+	token := generateToken(pid)
 	_, _ = conn.Write([]byte(fmt.Sprintf("%s %s", token, cmd)))
 
-	data, err := io.ReadAll(conn)
+	buf, err := io.ReadAll(conn)
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	return string(buf), nil
 }
 
-func getIPCToken(pid int) string {
-	// Use Sha256 for better security
+func generateToken(pid int) string {
 	return crypto.Sha256ToHex([]byte(fmt.Sprintf("%s:%d", ipcSecret, pid)))
 }
 
@@ -525,16 +409,14 @@ func getSockPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s.sock", appName, appVersion))
 }
 
-func savePid(p int) {
-	_ = file.Write(getPidPath(), cast.To[string](p))
-}
-
-func loadPid() int {
-	data, err := file.Read(getPidPath())
+func getPid() int {
+	data, err := os.ReadFile(getPidPath())
 	if err != nil {
 		return 0
 	}
-	return cast.To[int](data)
+	var pid int
+	fmt.Sscanf(string(data), "%d", &pid)
+	return pid
 }
 
 func removePid() {
