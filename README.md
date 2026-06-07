@@ -45,21 +45,31 @@ func (s *MyService) Reload() error {
 func main() {
 	starter.SetAppInfo("myapp", "1.0.0")
 
-	// Register with priority 1
-	starter.Register("myservice", &MyService{}, 1, 0, 0)
+	// Register with priority 1 and optional hooks
+	starter.Register("myservice", &MyService{}, 1, 0, 0).OnStarted(func() {
+		fmt.Println("MyService is ready!")
+	})
 
-	starter.Run()
+	if err := starter.Start(); err != nil {
+		panic(err)
+	}
+	
+	// Custom initialization logic here
+	
+	starter.Wait()
 }
 ```
 
 ## Interfaces
 
-- **`Service`**: Core lifecycle interface (`Start`, `Stop`, `Health`).
+- **`Service`**: Core lifecycle interface (`Start`, `Stop`, `Status`).
 - **`Reloader`**: Optional interface for services that support `Reload()` (triggered by `SIGHUP`).
 - **`UserSignalHandler`**: Optional interface for services that handle custom user signals (`SIGUSR1`, `SIGUSR2` or via `kill` command).
 
 ## Features
 
+- **Lifecycle Hooks**: `OnStarting`, `OnStarted`, `OnStopping`, `OnStopped` hooks for precise coordination.
+- **Start/Wait Pattern**: Replaces `Run()` to allow custom logic between service startup and blocking.
 - **Tiered Startup/Shutdown**: Concurrent execution within priority levels, serial execution across them.
 - **Trace ID Propagation**: Automatically generates a shared Trace ID for all services during startup, ensuring log correlation.
 - **Secure IPC**: Token-based Unix Domain Socket for `status` and `kill` commands.

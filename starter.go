@@ -41,6 +41,10 @@ var (
 
 	// Starter Logger
 	starterLogger *log.Logger
+
+	// Signal handling
+	sigs      chan os.Signal
+	cancelCtx context.CancelFunc
 )
 
 type managedService struct {
@@ -49,6 +53,30 @@ type managedService struct {
 	priority     int
 	startTimeout time.Duration
 	stopTimeout  time.Duration
+	onStarting   []func()
+	onStarted    []func()
+	onStopping   []func()
+	onStopped    []func()
+}
+
+func (ms *managedService) OnStarting(fn func()) *managedService {
+	ms.onStarting = append(ms.onStarting, fn)
+	return ms
+}
+
+func (ms *managedService) OnStarted(fn func()) *managedService {
+	ms.onStarted = append(ms.onStarted, fn)
+	return ms
+}
+
+func (ms *managedService) OnStopping(fn func()) *managedService {
+	ms.onStopping = append(ms.onStopping, fn)
+	return ms
+}
+
+func (ms *managedService) OnStopped(fn func()) *managedService {
+	ms.onStopped = append(ms.onStopped, fn)
+	return ms
 }
 
 type command struct {
@@ -74,14 +102,16 @@ func getStarterLogger() *log.Logger {
 }
 
 // Register adds a service to be managed by the starter.
-func Register(name string, svc Service, priority int, startTimeout, stopTimeout time.Duration) {
-	services[priority] = append(services[priority], &managedService{
+func Register(name string, svc Service, priority int, startTimeout, stopTimeout time.Duration) *managedService {
+	ms := &managedService{
 		Name:         name,
 		svc:          svc,
 		priority:     priority,
 		startTimeout: startTimeout,
 		stopTimeout:  stopTimeout,
-	})
+	}
+	services[priority] = append(services[priority], ms)
+	return ms
 }
 
 // SetAppInfo sets the application name and version.
@@ -100,8 +130,10 @@ func AddCommand(name, desc string, fn func()) {
 	commands[name] = &command{name: name, desc: desc, fn: fn}
 }
 
-// Run parses arguments and executes the service.
-func Run() {
+// TODO 使用 Start / Wait 代替 Run，方便在启动后做初始化操作，或者支持注册某服务的 OnStarting / OnStarted / OnStopping / OnStopped  事件
+
+// Start parses arguments and starts the services.
+func Start() error {
 	flagSet.Usage = showHelp
 	if len(os.Args) > 1 {
 		arg := os.Args[1]
@@ -109,36 +141,41 @@ func Run() {
 			// Subcommand detected, parse flags after the command
 			_ = flagSet.Parse(os.Args[2:])
 			cmd.fn()
-			return
+			os.Exit(0)
 		}
 
 		// Check for help/version
 		switch arg {
 		case "-h", "--help", "help":
 			showHelp()
-			return
+			os.Exit(0)
 		case "-v", "--version", "version":
 			fmt.Printf("%s version %s\n", appName, appVersion)
-			return
+			os.Exit(0)
 		}
 	}
 
 	// No starter command, treat all as app flags
 	_ = flagSet.Parse(os.Args[1:])
-	runForeground()
-}
 
-func runForeground() {
 	// Setup signal handling for graceful shutdown
-	sigs := make(chan os.Signal, 1)
+	sigs = make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var ctx context.Context
+	ctx, cancelCtx = context.WithCancel(context.Background())
 
 	if err := startServices(ctx); err != nil {
 		getStarterLogger().Error(fmt.Sprintf("[starter] start services failed: %v", err))
-		os.Exit(1)
+		return err
+	}
+	return nil
+}
+
+// Wait blocks until a termination signal is received.
+func Wait() {
+	if sigs == nil {
+		return
 	}
 
 	for {
@@ -160,7 +197,9 @@ func runForeground() {
 		break
 	}
 
-	cancel() // Trigger context cancellation
+	if cancelCtx != nil {
+		cancelCtx() // Trigger context cancellation
+	}
 	stopServices()
 	getStarterLogger().Info("[starter] shutdown complete")
 }
@@ -194,10 +233,16 @@ func startServices(ctx context.Context) error {
 
 				// Log using starter's logger (8-byte ID) but include service's trace ID in extra fields
 				getStarterLogger().Info(fmt.Sprintf("service [%s] starting", ms.Name), "trace", serviceTraceId)
+				for _, fn := range ms.onStarting {
+					fn()
+				}
 				if err := ms.svc.Start(sctx, serviceLogger); err != nil {
 					errChan <- fmt.Errorf("service [%s] start error: %w", ms.Name, err)
 				} else {
 					getStarterLogger().Info(fmt.Sprintf("service [%s] started", ms.Name), "trace", serviceTraceId)
+					for _, fn := range ms.onStarted {
+						fn()
+					}
 				}
 			}(ms)
 		}
@@ -232,10 +277,16 @@ func stopServices() {
 					defer cancel()
 				}
 				getStarterLogger().Info(fmt.Sprintf("service [%s] stopping", ms.Name))
+				for _, fn := range ms.onStopping {
+					fn()
+				}
 				if err := ms.svc.Stop(sctx); err != nil {
 					getStarterLogger().Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
 				} else {
 					getStarterLogger().Info(fmt.Sprintf("service [%s] stopped", ms.Name))
+					for _, fn := range ms.onStopped {
+						fn()
+					}
 				}
 			}(ms)
 		}

@@ -1,5 +1,11 @@
 # Changelog: @go/starter
 
+## v1.5.3 (2026-06-07)
+- **重大架构更迭: 引入 Start/Wait 编排模式与生命周期钩子**:
+  - **废弃 `Run()`**: 彻底移除黑盒式的 `Run()` 方法，改为显式的 `Start()` (解析与非阻塞启动) 与 `Wait()` (阻塞与信号处理) 模式。
+  - **生命周期钩子**: `Register` 现返回 `*managedService` 指针，支持链式注册 `OnStarting`, `OnStarted`, `OnStopping`, `OnStopped` 回调。
+  - **中间状态编排**: 允许开发者在 `Start()` 之后、`Wait()` 之前执行自定义初始化逻辑（如跨服务的业务对齐）。
+
 ## v1.5.2 (2026-06-05)
 - **可观测性升级: 中心化生命周期审计与 TraceID 链路追踪**:
   - **TraceID 分层**: 为 `starter` 编排层引入了独立的长短 ID 体系。
