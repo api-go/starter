@@ -449,7 +449,7 @@ func callIPC(pid int, cmd string) (string, error) {
 }
 
 func generateToken(pid int) string {
-	return crypto.Sha256ToHex([]byte(fmt.Sprintf("%s:%d", ipcSecret, pid)))
+	return crypto.SHA256ToHex([]byte(fmt.Sprintf("%s:%d", ipcSecret, pid)))
 }
 
 func getPidPath() string {
