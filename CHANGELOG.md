@@ -1,5 +1,10 @@
 # Changelog: @go/starter
 
+## v1.5.10 (2026-09-12)
+
+- Preserve all application arguments after `start` and `restart`, including unknown flags such as `--dev`.
+- Add `AddRemoteCommand` for authenticated, user-local IPC commands executed by the running service process.
+
 ## v1.5.8 (2026-09-05)
 - **依赖对齐**: 升级 `config`、`file` 与 `log` 至当前已发布版本。
 

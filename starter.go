@@ -2,6 +2,7 @@ package starter
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -37,7 +39,9 @@ var (
 	flagSet = flag.NewFlagSet(appName, flag.ContinueOnError)
 
 	// IPC Security
-	ipcSecret = "apigo-starter-secret-2026"
+	ipcSecret   = "apigo-starter-secret-2026"
+	ipcCommands = make(map[string]func([]string) (string, error))
+	ipcListener net.Listener
 
 	// Starter Logger
 	starterLogger *log.Logger
@@ -130,6 +134,13 @@ func AddCommand(name, desc string, fn func()) {
 	commands[name] = &command{name: name, desc: desc, fn: fn}
 }
 
+// AddRemoteCommand registers a command which is invoked by a short-lived CLI
+// process and executed inside the running service process over the local socket.
+func AddRemoteCommand(name, desc string, fn func([]string) (string, error)) {
+	ipcCommands[name] = fn
+	AddCommand(name, desc, func() { remoteCommandCmd(name, os.Args[2:]) })
+}
+
 // TODO 使用 Start / Wait 代替 Run，方便在启动后做初始化操作，或者支持注册某服务的 OnStarting / OnStarted / OnStopping / OnStopped  事件
 
 // Start parses arguments and starts the services.
@@ -138,8 +149,6 @@ func Start() error {
 	if len(os.Args) > 1 {
 		arg := os.Args[1]
 		if cmd, ok := commands[arg]; ok {
-			// Subcommand detected, parse flags after the command
-			_ = flagSet.Parse(os.Args[2:])
 			cmd.fn()
 			os.Exit(0)
 		}
@@ -167,6 +176,10 @@ func Start() error {
 
 	if err := startServices(ctx); err != nil {
 		getStarterLogger().Error(fmt.Sprintf("[starter] start services failed: %v", err))
+		return err
+	}
+	if err := startIPCServer(); err != nil {
+		stopServices()
 		return err
 	}
 	return nil
@@ -200,6 +213,7 @@ func Wait() {
 	if cancelCtx != nil {
 		cancelCtx() // Trigger context cancellation
 	}
+	stopIPCServer()
 	stopServices()
 	getStarterLogger().Info("[starter] shutdown complete")
 }
@@ -248,12 +262,13 @@ func startServices(ctx context.Context) error {
 		}
 		wg.Wait()
 		close(errChan)
+		startedPriorities = append(startedPriorities, p)
 		for err := range errChan {
 			if err != nil {
+				stopServices()
 				return err
 			}
 		}
-		startedPriorities = append(startedPriorities, p)
 	}
 	return nil
 }
@@ -264,33 +279,45 @@ func stopServices() {
 	})
 
 	for _, p := range startedPriorities {
-		svcs := services[p]
-		var wg sync.WaitGroup
-		for _, ms := range svcs {
-			wg.Add(1)
-			go func(ms *managedService) {
-				defer wg.Done()
-				sctx := context.Background()
-				if ms.stopTimeout > 0 {
-					var cancel context.CancelFunc
-					sctx, cancel = context.WithTimeout(sctx, ms.stopTimeout)
-					defer cancel()
-				}
-				getStarterLogger().Info(fmt.Sprintf("service [%s] stopping", ms.Name))
-				for _, fn := range ms.onStopping {
-					fn()
-				}
-				if err := ms.svc.Stop(sctx); err != nil {
-					getStarterLogger().Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
-				} else {
-					getStarterLogger().Info(fmt.Sprintf("service [%s] stopped", ms.Name))
-					for _, fn := range ms.onStopped {
+		pending := append([]*managedService(nil), services[p]...)
+		for len(pending) > 0 {
+			var wg sync.WaitGroup
+			failed := make(chan *managedService, len(pending))
+			for _, ms := range pending {
+				wg.Add(1)
+				go func(ms *managedService) {
+					defer wg.Done()
+					sctx := context.Background()
+					if ms.stopTimeout > 0 {
+						var cancel context.CancelFunc
+						sctx, cancel = context.WithTimeout(sctx, ms.stopTimeout)
+						defer cancel()
+					}
+					getStarterLogger().Info(fmt.Sprintf("service [%s] stopping", ms.Name))
+					for _, fn := range ms.onStopping {
 						fn()
 					}
-				}
-			}(ms)
+					if err := ms.svc.Stop(sctx); err != nil {
+						getStarterLogger().Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
+						failed <- ms
+					} else {
+						getStarterLogger().Info(fmt.Sprintf("service [%s] stopped", ms.Name))
+						for _, fn := range ms.onStopped {
+							fn()
+						}
+					}
+				}(ms)
+			}
+			wg.Wait()
+			close(failed)
+			pending = pending[:0]
+			for ms := range failed {
+				pending = append(pending, ms)
+			}
+			if len(pending) > 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
-		wg.Wait()
 	}
 	startedPriorities = nil
 }
@@ -351,8 +378,7 @@ func startCmd() {
 		return
 	}
 
-	cmd := exec.Command(os.Args[0])
-	cmd.Args = append([]string{os.Args[0]}, flagSet.Args()...)
+	cmd := exec.Command(os.Args[0], serviceCommandArgs(os.Args)...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -364,6 +390,13 @@ func startCmd() {
 
 	_ = os.WriteFile(getPidPath(), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
 	getStarterLogger().Info(fmt.Sprintf("[starter] %s started (PID %d)", appName, cmd.Process.Pid))
+}
+
+func serviceCommandArgs(args []string) []string {
+	if len(args) <= 2 {
+		return nil
+	}
+	return append([]string(nil), args[2:]...)
 }
 
 func stopCmd() {
@@ -410,12 +443,13 @@ func statusCmd() {
 }
 
 func killCmd() {
-	if flagSet.NArg() < 2 {
+	args := os.Args[2:]
+	if len(args) < 2 {
 		fmt.Println("Usage: kill <service_name> <signal_num>")
 		return
 	}
-	svcName := flagSet.Arg(0)
-	sigNum := flagSet.Arg(1)
+	svcName := args[0]
+	sigNum := args[1]
 	pid := getPid()
 	if pid == 0 || !isProcessRunning(pid) {
 		fmt.Println("Application is not running")
@@ -431,6 +465,21 @@ func killCmd() {
 }
 
 func callIPC(pid int, cmd string) (string, error) {
+	return callIPCRequest(pid, ipcRequest{Token: generateToken(pid), Command: cmd})
+}
+
+type ipcRequest struct {
+	Token   string   `json:"token"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
+type ipcResponse struct {
+	Result string `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+func callIPCRequest(pid int, request ipcRequest) (string, error) {
 	sockPath := getSockPath()
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
@@ -438,14 +487,117 @@ func callIPC(pid int, cmd string) (string, error) {
 	}
 	defer conn.Close()
 
-	token := generateToken(pid)
-	_, _ = conn.Write([]byte(fmt.Sprintf("%s %s", token, cmd)))
-
-	buf, err := io.ReadAll(conn)
-	if err != nil {
+	if err = json.NewEncoder(conn).Encode(request); err != nil {
 		return "", err
 	}
-	return string(buf), nil
+	var response ipcResponse
+	if err = json.NewDecoder(conn).Decode(&response); err != nil {
+		return "", err
+	}
+	if response.Error != "" {
+		return "", fmt.Errorf("%s", response.Error)
+	}
+	return response.Result, nil
+}
+
+func remoteCommandCmd(name string, args []string) {
+	pid := getPid()
+	if pid == 0 || !isProcessRunning(pid) {
+		fmt.Printf("%s is not running\n", appName)
+		return
+	}
+	result, err := callIPCRequest(pid, ipcRequest{Token: generateToken(pid), Command: name, Args: args})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	if result != "" {
+		fmt.Println(result)
+	}
+}
+
+func startIPCServer() error {
+	_ = os.Remove(getSockPath())
+	listener, err := net.Listen("unix", getSockPath())
+	if err != nil {
+		return fmt.Errorf("start IPC server: %w", err)
+	}
+	if err = os.Chmod(getSockPath(), 0600); err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("secure IPC socket: %w", err)
+	}
+	ipcListener = listener
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go handleIPCConnection(conn)
+		}
+	}()
+	return nil
+}
+
+func stopIPCServer() {
+	if ipcListener != nil {
+		_ = ipcListener.Close()
+		ipcListener = nil
+	}
+	_ = os.Remove(getSockPath())
+}
+
+func handleIPCConnection(conn net.Conn) {
+	defer conn.Close()
+	var request ipcRequest
+	response := ipcResponse{}
+	if err := json.NewDecoder(io.LimitReader(conn, 4<<20)).Decode(&request); err != nil {
+		response.Error = err.Error()
+	} else if request.Token != generateToken(os.Getpid()) {
+		response.Error = "invalid IPC token"
+	} else {
+		response.Result, err = dispatchIPCCommand(request.Command, request.Args)
+		if err != nil {
+			response.Error = err.Error()
+		}
+	}
+	_ = json.NewEncoder(conn).Encode(response)
+}
+
+func dispatchIPCCommand(name string, args []string) (string, error) {
+	if name == "status" {
+		var lines []string
+		for _, priority := range startedPriorities {
+			for _, managed := range services[priority] {
+				status, err := managed.svc.Status()
+				if err != nil {
+					status = err.Error()
+				}
+				lines = append(lines, fmt.Sprintf("%s: %s", managed.Name, status))
+			}
+		}
+		return strings.Join(lines, "\n"), nil
+	}
+	if strings.HasPrefix(name, "kill ") {
+		fields := strings.Fields(name)
+		if len(fields) != 3 {
+			return "", fmt.Errorf("usage: kill <service_name> <signal_num>")
+		}
+		var signalNumber int
+		if _, err := fmt.Sscanf(fields[2], "%d", &signalNumber); err != nil {
+			return "", fmt.Errorf("invalid signal number: %s", fields[2])
+		}
+		sig := syscall.Signal(signalNumber)
+		if !handleUserSignal(&fields[1], sig) {
+			return "", fmt.Errorf("service %s did not handle signal %d", fields[1], signalNumber)
+		}
+		return "signal delivered", nil
+	}
+	fn := ipcCommands[name]
+	if fn == nil {
+		return "", fmt.Errorf("unknown IPC command: %s", name)
+	}
+	return fn(args)
 }
 
 func generateToken(pid int) string {

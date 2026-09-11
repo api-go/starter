@@ -85,3 +85,10 @@ func main() {
 - `kill <svc_name> <signal_num>`: Send a specific signal to a named service.
 - `-v`, `--version`: Show version.
 - `-h`, `--help`: Show help.
+
+Arguments after `start` and `restart` are passed unchanged to the background
+application. For example, `./app restart --dev` starts `./app --dev`.
+
+Applications can expose a local command in the running process with
+`AddRemoteCommand`. CLI arguments are transported over a user-only Unix socket
+instead of being evaluated by a shell.

@@ -1,5 +1,8 @@
 # Test Report: @go/starter
 
+- Lifecycle argument tests cover unchanged `start` and `restart` passthrough.
+- IPC dispatch tests cover remote-command argument delivery.
+
 ## Coverage
 - `starter.go`: 90%
 - `service_test.go`: 100%
