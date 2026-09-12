@@ -1,5 +1,10 @@
 # Changelog: @go/starter
 
+## v1.5.11 (2026-09-12)
+
+- 不再预解析和拒绝应用自定义参数，使 `--config` 等宿主参数原样保留给应用配置层。
+- 升级 `config v1.5.8`。
+
 ## v1.5.10 (2026-09-12)
 
 - Preserve all application arguments after `start` and `restart`, including unknown flags such as `--dev`.

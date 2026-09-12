@@ -1,7 +1,7 @@
 apigo.cc/go/cast v1.5.7 h1:FFe/EHVUHv3U5DGh7FXuwuAg9d49U6MPU+ZQRJxPTvs=
 apigo.cc/go/cast v1.5.7/go.mod h1:ivFIhE2MdJbmLYO04xe7gmNlccJ8Su6B0hTwz0ZA6zQ=
-apigo.cc/go/config v1.5.7 h1:WAmiJQoIox3E3pOxk2qxsDbqtoDM+MT1CNc04LcGh+w=
-apigo.cc/go/config v1.5.7/go.mod h1:T0XXb+BVFGB+4auqoPqUxOFhGefnbPGN6lrilTYTR68=
+apigo.cc/go/config v1.5.8 h1:aqs6XcJ4TJiikJOanXe6tifvkXEU30mRXbif5cTPRMk=
+apigo.cc/go/config v1.5.8/go.mod h1:T0XXb+BVFGB+4auqoPqUxOFhGefnbPGN6lrilTYTR68=
 apigo.cc/go/crypto v1.5.8 h1:pSjkwbfIZJ7s45EoLMYxZJ4g8JanTqgfyuN47gt11ts=
 apigo.cc/go/crypto v1.5.8/go.mod h1:ckm28lIE3naAb34WnERTJ4/zbSfhVOFo9Rbz5BdhgkQ=
 apigo.cc/go/encoding v1.5.8 h1:GC3hyhqQRDXKLoLgom6rE57k4jKyCOHi3ytBSrLOl+Q=

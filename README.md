@@ -88,6 +88,7 @@ func main() {
 
 Arguments after `start` and `restart` are passed unchanged to the background
 application. For example, `./app restart --dev` starts `./app --dev`.
+Application-owned flags such as `--config env.1.yaml` are also left untouched.
 
 Applications can expose a local command in the running process with
 `AddRemoteCommand`. CLI arguments are transported over a user-only Unix socket

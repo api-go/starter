@@ -1,5 +1,10 @@
 # Test Report: @go/starter
 
+## v1.5.11
+
+- 生命周期参数测试覆盖应用自定义 `--config` 参数不会被 starter 消费。
+- `go test -v ./...`、`go test -bench=. ./...`、`go vet ./...` 与 `git diff --check` 通过。
+
 - Lifecycle argument tests cover unchanged `start` and `restart` passthrough.
 - IPC dispatch tests cover remote-command argument delivery.
 

@@ -11,9 +11,9 @@ import (
 )
 
 func TestServiceCommandArgsPreservesApplicationFlags(t *testing.T) {
-	want := []string{"--dev", "--profile=test"}
+	want := []string{"--dev", "--config=env.1.yaml", "--profile=test"}
 	for _, command := range []string{"start", "restart"} {
-		got := serviceCommandArgs([]string{"./master", command, "--dev", "--profile=test"})
+		got := serviceCommandArgs([]string{"./master", command, "--dev", "--config=env.1.yaml", "--profile=test"})
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s args = %#v, want %#v", command, got, want)
 		}

@@ -12,7 +12,7 @@ require apigo.cc/go/jsmod v1.5.5 // indirect
 
 require (
 	apigo.cc/go/cast v1.5.7 // indirect
-	apigo.cc/go/config v1.5.7 // indirect
+	apigo.cc/go/config v1.5.8 // indirect
 	apigo.cc/go/encoding v1.5.8 // indirect
 	apigo.cc/go/file v1.5.9 // indirect
 	apigo.cc/go/rand v1.5.4 // indirect

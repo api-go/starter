@@ -3,7 +3,6 @@ package starter
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -34,9 +33,6 @@ var (
 	// New Service registry
 	services          = make(map[int][]*managedService)
 	startedPriorities []int
-
-	// Flags
-	flagSet = flag.NewFlagSet(appName, flag.ContinueOnError)
 
 	// IPC Security
 	ipcSecret   = "apigo-starter-secret-2026"
@@ -145,7 +141,6 @@ func AddRemoteCommand(name, desc string, fn func([]string) (string, error)) {
 
 // Start parses arguments and starts the services.
 func Start() error {
-	flagSet.Usage = showHelp
 	if len(os.Args) > 1 {
 		arg := os.Args[1]
 		if cmd, ok := commands[arg]; ok {
@@ -163,9 +158,6 @@ func Start() error {
 			os.Exit(0)
 		}
 	}
-
-	// No starter command, treat all as app flags
-	_ = flagSet.Parse(os.Args[1:])
 
 	// Setup signal handling for graceful shutdown
 	sigs = make(chan os.Signal, 1)
