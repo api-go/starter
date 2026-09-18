@@ -1,5 +1,10 @@
 # Test Report: @go/starter
 
+## v1.5.12
+
+- `TestHiddenRemoteCommandIsCallableButNotShownInHelp` 验证隐藏 IPC 命令可调用但不出现在用户帮助中。
+- `go test ./... -count=1`、`go test -bench=. ./...`、`go vet ./...` 与 `git diff --check` 通过。
+
 ## v1.5.11
 
 - 生命周期参数测试覆盖应用自定义 `--config` 参数不会被 starter 消费。
@@ -7,6 +12,7 @@
 
 - Lifecycle argument tests cover unchanged `start` and `restart` passthrough.
 - IPC dispatch tests cover remote-command argument delivery.
+- Hidden remote-command tests cover authenticated dispatch without help output.
 
 ## Coverage
 - `starter.go`: 90%

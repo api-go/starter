@@ -137,6 +137,13 @@ func AddRemoteCommand(name, desc string, fn func([]string) (string, error)) {
 	AddCommand(name, desc, func() { remoteCommandCmd(name, os.Args[2:]) })
 }
 
+// AddHiddenRemoteCommand registers a remote command without advertising it in
+// command help. It is intended for development and compatibility entry points
+// that should remain callable without becoming part of the user-facing CLI.
+func AddHiddenRemoteCommand(name string, fn func([]string) (string, error)) {
+	AddRemoteCommand(name, "", fn)
+}
+
 // TODO 使用 Start / Wait 代替 Run，方便在启动后做初始化操作，或者支持注册某服务的 OnStarting / OnStarted / OnStopping / OnStopped  事件
 
 // Start parses arguments and starts the services.
@@ -353,6 +360,9 @@ func showHelp() {
 
 	var names []string
 	for cmdName := range commands {
+		if commands[cmdName].desc == "" {
+			continue
+		}
 		names = append(names, cmdName)
 	}
 	sort.Strings(names)

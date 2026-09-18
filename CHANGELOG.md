@@ -1,5 +1,10 @@
 # Changelog: @go/starter
 
+## v1.5.12 (2026-09-18)
+
+- Add `AddHiddenRemoteCommand` for internal IPC commands that should not appear in user-facing CLI help.
+- 对齐 `cast v1.5.8` 与 `log v1.5.16`。
+
 ## v1.5.11 (2026-09-12)
 
 - 不再预解析和拒绝应用自定义参数，使 `--config` 等宿主参数原样保留给应用配置层。

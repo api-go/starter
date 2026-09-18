@@ -1,8 +1,11 @@
 package starter
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -29,6 +32,45 @@ func TestDispatchIPCCommandPassesArguments(t *testing.T) {
 	got, err := dispatchIPCCommand("run", []string{"--dev remains application input"})
 	if err != nil || got != "--dev remains application input" {
 		t.Fatalf("dispatch result = %q, %v", got, err)
+	}
+}
+
+func TestHiddenRemoteCommandIsCallableButNotShownInHelp(t *testing.T) {
+	oldCommands, oldIPCCommands := commands, ipcCommands
+	oldAppName, oldAppVersion, oldArgs := appName, appVersion, os.Args
+	defer func() {
+		commands, ipcCommands = oldCommands, oldIPCCommands
+		appName, appVersion, os.Args = oldAppName, oldAppVersion, oldArgs
+	}()
+	commands = map[string]*command{}
+	ipcCommands = map[string]func([]string) (string, error){}
+	appName, appVersion, os.Args = "test", "1.0.0", []string{"test"}
+	AddCommand("visible", "Visible command", func() {})
+	AddHiddenRemoteCommand("internal", func(args []string) (string, error) {
+		return "ok", nil
+	})
+
+	if got, err := dispatchIPCCommand("internal", nil); err != nil || got != "ok" {
+		t.Fatalf("hidden command dispatch = %q, %v", got, err)
+	}
+
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = write
+	showHelp()
+	os.Stdout = oldStdout
+	_ = write.Close()
+	var output bytes.Buffer
+	_, _ = io.Copy(&output, read)
+	_ = read.Close()
+	if bytes.Contains(output.Bytes(), []byte("internal")) {
+		t.Fatalf("hidden command was shown in help:\n%s", output.String())
+	}
+	if !bytes.Contains(output.Bytes(), []byte("visible")) {
+		t.Fatalf("visible command missing from help:\n%s", output.String())
 	}
 }
 

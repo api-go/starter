@@ -93,3 +93,6 @@ Application-owned flags such as `--config env.1.yaml` are also left untouched.
 Applications can expose a local command in the running process with
 `AddRemoteCommand`. CLI arguments are transported over a user-only Unix socket
 instead of being evaluated by a shell.
+
+Development or compatibility commands that must remain callable without being
+listed in user-facing help can use `AddHiddenRemoteCommand`.
