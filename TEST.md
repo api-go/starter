@@ -32,3 +32,8 @@
 
 ## Benchmark
 No benchmarks for starter as it's a lifecycle manager, not a high-performance utility.
+
+## v1.5.13 发布验证（2026-10-10）
+
+- GOWORK=off go test -v ./... 与 go test -bench=. ./... 通过，依赖均为已发布 tag。
+- API 以 GOWORK=off go doc 与导出源码交叉核对（getExports 工具不可用）。

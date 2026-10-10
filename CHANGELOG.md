@@ -1,5 +1,8 @@
 # Changelog: @go/starter
 
+## [v1.5.13] - 2026-10-10
+- 对齐 Log v1.5.17 及当前已发布的上游依赖。
+
 ## v1.5.12 (2026-09-18)
 
 - Add `AddHiddenRemoteCommand` for internal IPC commands that should not appear in user-facing CLI help.

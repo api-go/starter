@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	apigo.cc/go/crypto v1.5.8
 	apigo.cc/go/id v1.5.9
-	apigo.cc/go/log v1.5.16
+	apigo.cc/go/log v1.5.17
 )
 
 require apigo.cc/go/jsmod v1.5.5 // indirect

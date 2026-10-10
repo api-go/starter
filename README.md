@@ -96,3 +96,7 @@ instead of being evaluated by a shell.
 
 Development or compatibility commands that must remain callable without being
 listed in user-facing help can use `AddHiddenRemoteCommand`.
+
+## v1.5.13 依赖基线
+
+本版本对齐 Log v1.5.17 与发布时模块索引中的上游已发布依赖；公开 API 保持兼容。
