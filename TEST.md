@@ -37,3 +37,11 @@ No benchmarks for starter as it's a lifecycle manager, not a high-performance ut
 
 - GOWORK=off go test -v ./... 与 go test -bench=. ./... 通过，依赖均为已发布 tag。
 - API 以 GOWORK=off go doc 与导出源码交叉核对（getExports 工具不可用）。
+
+## v1.5.14 发布验证（2026-10-26）
+
+GOWORK=off，正式依赖 crypto v1.5.9，无 replace。`go test -v ./...`、`go test -bench=. ./...`、`go vet ./...`、`go mod verify` 通过。使用 `go doc` 与源码交叉核对 API，替代 getExports。现有回归覆盖本模块业务；新旧 GCM 格式、认证失败和性能基准见 crypto v1.5.9。
+
+本次功能测试无跳过。
+
+本模块未定义 Benchmark；基准命令已执行并通过。
