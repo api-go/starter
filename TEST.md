@@ -21,7 +21,7 @@
 ## Scenarios
 - [x] Service registration and priority-based tiered lifecycle
 - [x] Concurrent execution within the same priority tier
-- [x] Timeout handling for Start and Stop operations
+- [x] Cooperative Start context timeout; enforced Stop deadline including hooks and retries
 - [x] Automated PID management in system temp directory
 - [x] Secure IPC (Unix Socket) with token-based authentication
 - [x] Detailed health reporting via `status` command
@@ -45,3 +45,7 @@ GOWORK=off，正式依赖 crypto v1.5.9，无 replace。`go test -v ./...`、`go
 本次功能测试无跳过。
 
 本模块未定义 Benchmark；基准命令已执行并通过。
+
+## 退出修复验证（2026-10-30，未发布）
+
+在dev1固定Go 1.26.8镜像验证。新增外部测试包的真实隔离进程覆盖忽略context的Stop、前后停止钩子阻塞、永久错误重试总期限、默认期限、整体期限、再次SIGINT、正常退出状态及低优先级清理。原有失败优先级重试顺序测试保留。全部不启动业务或媒体。

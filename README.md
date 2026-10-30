@@ -104,3 +104,18 @@ listed in user-facing help can use `AddHiddenRemoteCommand`.
 ## AES-GCM 配置密文兼容
 
 正式依赖选用 crypto v1.5.9，共享 `Symmetric.Decrypt/DecryptBytes` 先认证 `[12 字节 IV][密文][16 字节 tag]`，再使用配置 IV 兼容旧格式；现有 API 不变。新数据推荐 `EncryptBytesAutoIV`，先升级接收端再启用新写入。此能力针对 AES-GCM，不改变 CBC/SM4 格式。
+
+## Bounded shutdown (unreleased)
+
+`Register` stop timeouts now bound the entire stop operation, including hooks and
+retries, even when `Stop` ignores its context. A non-positive stop timeout uses
+`DefaultStopTimeout` (5 seconds). Configure it before `Start` if needed.
+`ShutdownTimeout` (15 seconds) bounds all priority tiers together.
+
+Normal shutdown preserves reverse dependency order. A failed service is retried
+within its original deadline; after that deadline, remaining dependencies receive
+best-effort cleanup. A timed-out goroutine cannot be killed safely by Go and must
+not be treated as successfully stopped. The foreground process exits with status
+1 on incomplete shutdown or a second SIGINT/SIGTERM, and never reports shutdown
+complete for those paths. This manager does not terminate arbitrary child process
+groups: applications must own their children and react to parent cancellation.

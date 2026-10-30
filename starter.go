@@ -3,6 +3,7 @@ package starter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +21,13 @@ import (
 	"apigo.cc/go/id"
 	"apigo.cc/go/log"
 )
+
+// DefaultStopTimeout bounds each service, including hooks and retries, when
+// Register receives a non-positive stop timeout. Configure before Start.
+var DefaultStopTimeout = 5 * time.Second
+
+// ShutdownTimeout bounds the entire shutdown. Configure before Start.
+var ShutdownTimeout = 15 * time.Second
 
 var (
 	// Default configuration
@@ -40,7 +48,8 @@ var (
 	ipcListener net.Listener
 
 	// Starter Logger
-	starterLogger *log.Logger
+	starterLogger     *log.Logger
+	starterLoggerOnce sync.Once
 
 	// Signal handling
 	sigs      chan os.Signal
@@ -95,9 +104,9 @@ func init() {
 
 // getStarterLogger returns the singleton logger for the starter context.
 func getStarterLogger() *log.Logger {
-	if starterLogger == nil {
+	starterLoggerOnce.Do(func() {
 		starterLogger = log.DefaultLogger.New(id.Get8Bytes4KPerSecond())
-	}
+	})
 	return starterLogger
 }
 
@@ -209,12 +218,35 @@ func Wait() {
 		break
 	}
 
-	if cancelCtx != nil {
-		cancelCtx() // Trigger context cancellation
+	done := make(chan error, 1)
+	go func() {
+		if cancelCtx != nil {
+			cancelCtx()
+		}
+		stopIPCServer()
+		done <- stopServices()
+	}()
+	deadline := time.NewTimer(ShutdownTimeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				getStarterLogger().Error(fmt.Sprintf("[starter] shutdown incomplete: %v", err))
+				os.Exit(1)
+			}
+			getStarterLogger().Info("[starter] shutdown complete")
+			return
+		case sig := <-sigs:
+			if sig == syscall.SIGINT || sig == syscall.SIGTERM {
+				getStarterLogger().Error("[starter] repeated termination signal, forcing exit")
+				os.Exit(1)
+			}
+		case <-deadline.C:
+			getStarterLogger().Error("[starter] shutdown deadline exceeded, forcing exit")
+			os.Exit(1)
+		}
 	}
-	stopIPCServer()
-	stopServices()
-	getStarterLogger().Info("[starter] shutdown complete")
 }
 
 func startServices(ctx context.Context) error {
@@ -272,53 +304,72 @@ func startServices(ctx context.Context) error {
 	return nil
 }
 
-func stopServices() {
-	sort.Slice(startedPriorities, func(i, j int) bool {
-		return startedPriorities[i] > startedPriorities[j]
-	})
-
+func stopServices() error {
+	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
+	defer cancel()
+	sort.Slice(startedPriorities, func(i, j int) bool { return startedPriorities[i] > startedPriorities[j] })
+	var failures []error
 	for _, p := range startedPriorities {
-		pending := append([]*managedService(nil), services[p]...)
-		for len(pending) > 0 {
-			var wg sync.WaitGroup
-			failed := make(chan *managedService, len(pending))
-			for _, ms := range pending {
-				wg.Add(1)
-				go func(ms *managedService) {
-					defer wg.Done()
-					sctx := context.Background()
-					if ms.stopTimeout > 0 {
-						var cancel context.CancelFunc
-						sctx, cancel = context.WithTimeout(sctx, ms.stopTimeout)
-						defer cancel()
-					}
-					getStarterLogger().Info(fmt.Sprintf("service [%s] stopping", ms.Name))
-					for _, fn := range ms.onStopping {
-						fn()
-					}
-					if err := ms.svc.Stop(sctx); err != nil {
-						getStarterLogger().Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
-						failed <- ms
-					} else {
-						getStarterLogger().Info(fmt.Sprintf("service [%s] stopped", ms.Name))
-						for _, fn := range ms.onStopped {
-							fn()
-						}
-					}
-				}(ms)
-			}
-			wg.Wait()
-			close(failed)
-			pending = pending[:0]
-			for ms := range failed {
-				pending = append(pending, ms)
-			}
-			if len(pending) > 0 {
-				time.Sleep(100 * time.Millisecond)
+		results := make(chan error, len(services[p]))
+		for _, ms := range services[p] {
+			go func(ms *managedService) { results <- stopService(ctx, ms) }(ms)
+		}
+		for range services[p] {
+			if err := <-results; err != nil {
+				getStarterLogger().Error(err.Error())
+				failures = append(failures, err)
 			}
 		}
 	}
 	startedPriorities = nil
+	return errors.Join(failures...)
+}
+
+// A timeout bounds the wait, not the service goroutine. Go cannot safely kill a
+// goroutine. On timeout, continue best-effort dependency cleanup and report failure.
+func stopService(parent context.Context, ms *managedService) error {
+	timeout := ms.stopTimeout
+	if timeout <= 0 {
+		timeout = DefaultStopTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	getStarterLogger().Info(fmt.Sprintf("service [%s] stopping", ms.Name))
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("service [%s] stop incomplete: %w", ms.Name, err)
+		}
+		result := make(chan error, 1)
+		go func() {
+			for _, fn := range ms.onStopping {
+				fn()
+			}
+			err := ms.svc.Stop(ctx)
+			if err == nil {
+				for _, fn := range ms.onStopped {
+					fn()
+				}
+			}
+			result <- err
+		}()
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("service [%s] stop incomplete: %w", ms.Name, ctx.Err())
+		case err := <-result:
+			if err == nil {
+				getStarterLogger().Info(fmt.Sprintf("service [%s] stopped", ms.Name))
+				return nil
+			}
+			getStarterLogger().Error(fmt.Sprintf("service [%s] stop error: %v", ms.Name, err))
+		}
+		retry := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			retry.Stop()
+			return fmt.Errorf("service [%s] stop incomplete: %w", ms.Name, ctx.Err())
+		case <-retry.C:
+		}
+	}
 }
 
 func reloadServices() {
