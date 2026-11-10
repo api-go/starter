@@ -1,7 +1,7 @@
 package starter
 
 import (
-	"apigo.cc/go/log"
+	"github.com/api-go/log"
 	"context"
 	"os"
 )

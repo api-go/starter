@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"apigo.cc/go/log"
+	"github.com/api-go/log"
 )
 
 func TestServiceCommandArgsPreservesApplicationFlags(t *testing.T) {

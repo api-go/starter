@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	"apigo.cc/go/crypto"
-	"apigo.cc/go/id"
-	"apigo.cc/go/log"
+	"github.com/api-go/crypto"
+	"github.com/api-go/id"
+	"github.com/api-go/log"
 )
 
 // DefaultStopTimeout bounds each service, including hooks and retries, when

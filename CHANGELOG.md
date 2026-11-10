@@ -1,3 +1,7 @@
+## [v1.5.15] - 2026-11-10
+
+- 迁移至 github.com/api-go/starter，同步内部模块路径与依赖。
+
 # Changelog: @go/starter
 
 ## Unreleased · 2026-10-30
@@ -31,7 +35,7 @@
 - **依赖对齐**: 升级 `config`、`file` 与 `log` 至当前已发布版本。
 
 ## v1.5.7 (2026-09-05)
-- **依赖对齐**: 升级全部 `apigo.cc/go/*` 依赖至当前已发布版本。
+- **依赖对齐**: 升级全部 `github.com/api-go/*` 依赖至当前已发布版本。
 
 ## v1.5.5 (2026-06-21)
 - **依赖对齐**:
@@ -81,7 +85,7 @@
 ## v1.0.0 (2026-05-10)
 
 ### 🚀 Features
-- **Initial Release**: Migrated from `ssgo/starter` to `apigo.cc/go/starter`.
+- **Initial Release**: Migrated from `ssgo/starter` to `github.com/api-go/starter`.
 - **Background Mode**: Supports running services in the background with `-log` redirection.
 - **PID Management**: Automatic PID file creation and cleanup.
 - **Signal Handling**: Graceful shutdown on `SIGINT`/`SIGTERM`, reload support on `SIGHUP`.

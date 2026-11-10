@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"apigo.cc/go/log"
-	"apigo.cc/go/starter"
+	"github.com/api-go/log"
+	"github.com/api-go/starter"
 )
 
 type mockService struct {

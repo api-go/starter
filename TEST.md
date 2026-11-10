@@ -49,3 +49,13 @@ GOWORK=off，正式依赖 crypto v1.5.9，无 replace。`go test -v ./...`、`go
 ## 退出修复验证（2026-10-30，未发布）
 
 在dev1固定Go 1.26.8镜像验证。新增外部测试包的真实隔离进程覆盖忽略context的Stop、前后停止钩子阻塞、永久错误重试总期限、默认期限、整体期限、再次SIGINT、正常退出状态及低优先级清理。原有失败优先级重试顺序测试保留。全部不启动业务或媒体。
+
+## GitHub migration validation (pending release)
+
+Module paths and internal dependency versions are migrated. Development verification uses GOWORK=off and explicit sibling replacements; remove these replacements before release. See migration validation logs for actual results. Existing unrelated working changes are preserved and require separate review.
+
+API inventory verification: `GOWORK=off go doc` succeeded; output retained in the migration validation directory. Source exports were preserved by the path migration.
+
+## GitHub release verification
+
+GOWORK=off go test -v ./... and go test -bench=. ./... passed using published GitHub dependencies, without local replacements. go mod verify passed.

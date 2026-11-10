@@ -5,7 +5,7 @@ Service starter for @go applications, supporting background mode, PID management
 ## Installation
 
 ```bash
-go get apigo.cc/go/starter
+go get github.com/api-go/starter
 ```
 
 ## Usage
@@ -16,8 +16,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"apigo.cc/go/log"
-	"apigo.cc/go/starter"
+	"github.com/api-go/log"
+	"github.com/api-go/starter"
 )
 
 type MyService struct {}
