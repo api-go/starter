@@ -20,3 +20,7 @@ not be treated as successfully stopped. The foreground process exits with status
 1 on incomplete shutdown or a second SIGINT/SIGTERM, and never reports shutdown
 complete for those paths. This manager does not terminate arbitrary child process
 groups: applications must own their children and react to parent cancellation.
+
+### Built-in log commands
+
+Applications automatically expose log/logv before service startup, backed by log.RunCommand. `app log` defaults to the configured file with -tail 100 -f; ranges, follow, JSON/raw and explicit files are supported. logv formats stdin or restores files plus their .dict; compressed stdin needs -dict. AddCommand may override these defaults.

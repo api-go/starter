@@ -119,3 +119,7 @@ not be treated as successfully stopped. The foreground process exits with status
 1 on incomplete shutdown or a second SIGINT/SIGTERM, and never reports shutdown
 complete for those paths. This manager does not terminate arbitrary child process
 groups: applications must own their children and react to parent cancellation.
+
+### 内置日志命令
+
+所有使用 starter 的应用默认提供 `log` 与 `logv` 命令，委托 log.RunCommand，在服务启动前分流。`app log` 默认读取当前配置日志并执行 -tail 100 -f；支持 -head N/-tail N/-cat、-f、-json/-raw 和文件参数。logv 无文件名格式化 stdin，文件参数自动关联 .dict；压缩 stdin 用 -dict。应用 AddCommand 可覆盖默认命令。

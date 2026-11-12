@@ -59,3 +59,7 @@ API inventory verification: `GOWORK=off go doc` succeeded; output retained in th
 ## GitHub release verification
 
 GOWORK=off go test -v ./... and go test -bench=. ./... passed using published GitHub dependencies, without local replacements. go mod verify passed.
+
+## 内置日志命令 — 2026-11-12
+
+子进程验证 starter log 的真实命令分流、文件参数与 tail 范围。GOWORK=off，使用 /tmp/apigo-validation-starter.mod 显式替换本次 log/timer；API 用 go doc 与源码核对。
