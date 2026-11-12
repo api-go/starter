@@ -63,3 +63,7 @@ GOWORK=off go test -v ./... and go test -bench=. ./... passed using published Gi
 ## 内置日志命令 — 2026-11-12
 
 子进程验证 starter log 的真实命令分流、文件参数与 tail 范围。GOWORK=off，使用 /tmp/apigo-validation-starter.mod 显式替换本次 log/timer；API 用 go doc 与源码核对。
+
+## 日志依赖联动 — 2026-11-12
+
+开发验证使用 GOWORK=off 与 go.mod 的显式本地 replace；执行完整测试、全量基准（benchtime=100ms），API 用 go doc 与导出源码交叉核对。结果记录在 /tmp/apigo-starter-integration-*.txt。
